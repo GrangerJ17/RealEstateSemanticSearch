@@ -1,36 +1,93 @@
-import requests
-import re
-from selenium import webdriver 
+from selenium import webdriver
+from scraping_util import scroll_to_bottom, click_all_load_more
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-import httpx
+from selenium.webdriver.common.keys import Keys
 from bs4 import BeautifulSoup
-
-# assumptions: 
-# - css selector and class names are known before use script (a function will be given to extract them)
-# - then you can target these classes and extract from them
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 
 
+def fetch_html_with_js(driver, url, wait_for_selectors: list = None, timeout: int = 20, scroll: bool = False, button: list = None):
 
-# TODO: pull ordered tags, read from tags given by user once they are known, extract data into user defined fields, bypass/handle logins
+    driver.get(url)
+
+    time.sleep(5)
+
+    if wait_for_selectors:
+        
+        for elem in wait_for_selectors:
+            try:
+                WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, elem))
+                )
+                
+            except TimeoutException:
+                print(f"Timeout waiting for {elem}")
+
+    if button:
+        for b in button:
+            click_all_load_more(driver, b)
+
+    if scroll:
+        scroll_to_bottom(driver)
+            
+    
+    
+
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(0.5)
+
+    html_string = driver.page_source
+    soup = BeautifulSoup(html_string, "lxml")
+    return soup
 
 
-url = "https://www.linkedin.com.au/jobs/"
+def normalise_target( target):
 
-options = Options()
-options.add_argument("--headless")
+    
+    if isinstance(target, str):
+        return target
 
-driver = webdriver.Chrome(options=options) 
+    if "attr" in target:
+        if "value" in target:
+            return f"[{target['attr']}='{target['value']}']"
+        else:
+            return f"[{target['attr']}]"
+
+    if "class" in target:
+        return f".{target['class']}"
+
+    raise ValueError(f"Unsupported target format: {target}")
+
+def extract_fields( dom, selector_map: dict):
+
+    extracted_data = {}
+
+    for selector, field in selector_map.items():
+        data = dom.select(selector)
+        for d in data:
+            print(d.parent)
+            if field not in extracted_data:
+                extracted_data[field] = []
+            extracted_data[field].append(d.text) 
+
+    return extracted_data
+
+def clean_data(extracted_data):
+
+    for k, v in extracted_data.items():
+        new_values = []
+        for value in v:
+            new_values.append(value.strip().lstrip().replace("\n", " "))
+
+        extracted_data[k] = new_values
+
+    return extracted_data
 
 
-driver.get(url)
-elements = driver.find_elements("xpath", "//*[@class]")
 
-classes = set()
-for el in elements:
-    for cls in el.get_attribute("class").split():
-        classes.add(cls)
-
-print(sorted(classes))
-
-driver.quit()
