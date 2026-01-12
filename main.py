@@ -1,5 +1,7 @@
 import json
 import copy
+import logging
+import datetime
 from pathlib import Path
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -12,9 +14,12 @@ from bs4 import BeautifulSoup
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import asyncio
-from web_data_handling.tranform_data import *
+from web_data_handling.web_parsing import *
 from dotenv import load_dotenv
 import os
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(filename="log.txt", encoding="utf-8", level=logging.DEBUG)
 
 class SiteJob:
     def __init__(self, config: dict):
@@ -23,8 +28,7 @@ class SiteJob:
 
     def scrape(self, driver, url):
         property_data = None
-       
-        # url =  self.config["base_url"]
+
         if self.config["from_script"] == "true":
             property_data = retrieve_from_script(driver=driver, url = url, script_name=self.config["script_name"], global_tags=self.config["global_tags"])
 
@@ -44,20 +48,36 @@ class SiteJob:
                             except json.JSONDecodeError:
                                 break
                 except KeyError as e:
-                    print(f"Error: {e}")
+                    logger.error(f"Error: Key {e} not found in the following site schema: {property_data}")
                     continue
 
                 self.extraction_fields[k] = nested_field
                 
-        
+        if self.extraction_fields["description"]:
+           self.extraction_fields["description"] = "".join(self.extraction_fields["description"])
 
-    def transform(self, data):
-        pass
+
+    def transform(self, data: dict, site: str = None):
+        transformed_data = {
+            "id": str(data.get("id", "")),
+            "price": float(data.get("price", 0)),
+            "description": float(data.get("description", "")),
+            "address": float(data.get("address", "")),
+            "bedrooms": int(data.get("bedrooms", 0)),
+            "bathrooms": int(data.get("bathrooms", 0)),
+            "carspaces": int(data.get("carspaces", 0))
+
+        }
+
+        final_data = {
+            "scraped_at": datetime.datetime.now(),
+            "agency_url": site,
+            "property_data" : transformed_data
+        }
+
+        return final_data
 
     def load(self, data):
-        pass
-
-    def run(self):
         pass
 
 def load_config(file_path):
@@ -140,18 +160,16 @@ async def main():
     
 
 
-    
+
     for links in target_links:
 
         for link in links:
-            print(link)
+            sample_id = link.split('/')[-1] 
+            logger.info(f"Extract data from {link}")
             job = SiteJob(config=load_config(config_files[0]))
-            print(job)
-            result = job.scrape(driver=driver, url=link)
-            with open("./results.json", "a") as f:
-                f.write("\n\n=======NEW RESULTS=======\n\n")
+            job.scrape(driver=driver, url=link)
+            with open(f"./raw_samples/property_{sample_id}.json", "a") as f:
                 json.dump(job.extraction_fields, fp=f, indent=4)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

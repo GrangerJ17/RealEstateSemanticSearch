@@ -32,7 +32,7 @@ def retrieve_from_script(driver, url: str, script_name: str, global_tags: list =
     return json_element
 
 def fetch_html_with_js(driver, url, wait_for_selectors: list = None, timeout: int = 20, scroll: bool = False, button: list = None):
-
+    # Works but isnt compatible with main execution
     driver.get(url)
 
     time.sleep(5)
