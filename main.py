@@ -2,6 +2,9 @@ import json
 import copy
 import logging
 import datetime
+import sqlalchemy as sa
+from sqlalchemy import create_engine, inspect
+import sqlite3
 from pathlib import Path
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -25,10 +28,12 @@ class SiteJob:
     def __init__(self, config: dict):
         self.config = config
         self.extraction_fields = {k: None for k, v in config["fields"].items()}
+        self.final_data = None
+        self.job_url = None
 
     def scrape(self, driver, url):
         property_data = None
-
+        self.job_url = url
         if self.config["from_script"] == "true":
             property_data = retrieve_from_script(driver=driver, url = url, script_name=self.config["script_name"], global_tags=self.config["global_tags"])
 
@@ -57,12 +62,16 @@ class SiteJob:
            self.extraction_fields["description"] = "".join(self.extraction_fields["description"])
 
 
-    def transform(self, data: dict, site: str = None):
+        self.final_data = self.extraction_fields
+
+
+    def transform(self):
+        data = self.final_data
         transformed_data = {
             "id": str(data.get("id", "")),
             "price": float(data.get("price", 0)),
-            "description": float(data.get("description", "")),
-            "address": float(data.get("address", "")),
+            "description": str(data.get("description", "")),
+            "address": str(data.get("address", "")),
             "bedrooms": int(data.get("bedrooms", 0)),
             "bathrooms": int(data.get("bathrooms", 0)),
             "carspaces": int(data.get("carspaces", 0))
@@ -71,14 +80,54 @@ class SiteJob:
 
         final_data = {
             "scraped_at": datetime.datetime.now(),
-            "agency_url": site,
-            "property_data" : transformed_data
+            "url": str(self.job_url),
+            "property_data" : dict(transformed_data)
         }
 
+        
         return final_data
 
-    def load(self, data):
-        pass
+    def load(self, cur, main_table, metadata_table):
+        #TODO: Handle possible duplicate keys on different properties
+        final_data = self.final_data["property_data"]
+        if_exists_query = f"SELECT 1 FROM {metadata_table} WHERE property_id = ?"
+        cur.execute(if_exists_query, (final_data["id"],))
+        check_exists=cur.fetchone()
+
+        if check_exists is None:
+            cur.execute(
+                f"""INSERT INTO {main_table}( 
+                property_id, 
+                title,
+                price,
+                bedrooms,
+                bathrooms,
+                carspaces,
+                description)
+                VALUES(?,?,?,?,?,?,?)
+                """, (final_data["id"],
+                  final_data["title"],
+                  final_data["price"],
+                  final_data["bedrooms"],
+                  final_data["bathrooms"],
+                  final_data["carspaces"],
+                  final_data["description"]))
+            
+            cur.commit()
+
+            cur.execute(f"""INSERT INTO {metadata_table}
+                    property_id,
+                    scraped_at,
+                    job_url)
+                    VALUES(?,?,?)""", 
+                    (final_data["id"],
+                    self.final_data["scraped_at"],
+                    self.final_data["job_url"])
+                    )
+            
+            cur.commit()
+            
+        
 
 def load_config(file_path):
     config_file = None 
@@ -157,9 +206,7 @@ async def main():
 
     target_links = [await extract_listing_pages(driver=driver, links=target_urls, config=config) for config in configs]
 
-    
-
-
+    active_jobs = []
 
     for links in target_links:
 
@@ -168,8 +215,42 @@ async def main():
             logger.info(f"Extract data from {link}")
             job = SiteJob(config=load_config(config_files[0]))
             job.scrape(driver=driver, url=link)
+            job.transform()
+            active_jobs.append(job)
             with open(f"./raw_samples/property_{sample_id}.json", "a") as f:
                 json.dump(job.extraction_fields, fp=f, indent=4)
+    try:
+        with sqlite3.connect("./temp_database/properties.db") as conn:
+            cur = conn.cursor()
+            engine = create_engine("sqlite:///temp_database/properties.db")
+            insp = inspect(engine)
+            if not insp.has_table("properties"):
+                cur.execute(
+                    """CREATE TABLE IF NOT EXISTS properties (
+                    id INTEGER PRIMARY KEY,
+                    property_id TEXT NOT NULL, 
+                    title text NOT NULL,
+                    price INTEGER,
+                    bedrooms INTEGER,
+                    bathrooms INTEGER,
+                    carspaces INTEGER,
+                    description TEXT NOT NULL
+                    )
+                    """)
+            if not insp.has_table("properties_metadata"):
+                cur.execute("""CREATE TABLE IF NOT EXISTS properties_metadata(
+                    id INTEGER PRIMARY KEY,
+                    FOREIGN KEY (property_id) REFERENCES properties (property_id),
+                    scraped_at DATE NOT NULL,
+                    job_url TEXT NOT NULL)
+                    """)
+                
+            for job in active_jobs:
+                job.load(cur, main_table="properties", metadata_table="properties_metadata")
+
+
+    except sqlite3.OperationalError as e:
+        print("Failed to open database:", e)      
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -178,11 +259,7 @@ if __name__ == "__main__":
     '''TODO:
      - Automate this part and spin up jenkins in homelab:
         * continue development with CICD setup
-        * write tests jenkins can use (check data formatting and other deterministic stuff)
-
-    - Transform scraped data:
-        * Normalise fields
-        * Then dedup results of entire scrape 
+        * write tests jenkins can use (check data formatting and other deterministic stuff
 
    
 
